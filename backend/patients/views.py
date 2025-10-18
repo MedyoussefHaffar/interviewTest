@@ -110,10 +110,30 @@ def delete_patient(request, patient_id):
     data, status_code = api_client.delete_patient(patient_id)
     return Response(data, status=status_code)
 
-@api_view(['POST'])
-def copy_external_patient(request, patient_id):
+@api_view(['POST'])  # Make sure this only allows POST
+def copy_external_patient(request):
     """
-    POST /patients/{id}/copy - Create a local copy of an external patient
+    POST /patients/copy - Create a local copy of an external patient
+    Expects the full patient data in the request body
     """
-    data, status_code = api_client.copy_external_patient(patient_id)
+    # Get the patient data from request body
+    patient_data = request.data
+    
+    # Validate required fields
+    required_fields = ['first_name', 'last_name', 'sex', 'ethnic_background']
+    for field in required_fields:
+        if field not in patient_data:
+            return Response(
+                {"error": f"Missing required field: {field}"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+    
+    # Generate a stable external ID if not provided
+    if not patient_data.get('third_party_id'):
+        import hashlib
+        patient_info = f"{patient_data['first_name']}{patient_data['last_name']}{patient_data.get('dob', '')}"
+        patient_data['third_party_id'] = f"ext_{hashlib.md5(patient_info.encode()).hexdigest()[:12]}"
+    
+    # Call the service to create local copy
+    data, status_code = api_client.create_local_patient_copy(patient_data)
     return Response(data, status=status_code)

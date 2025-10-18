@@ -1,44 +1,26 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { Patient } from '@/types/patient';
-import { patientApi } from '@/lib/api';
+import { useState } from 'react';
+import { Patient, PatientCreate } from '@/types/patient';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Plus, Users, Database, ExternalLink, ChevronLeft, ChevronRight } from 'lucide-react';
 import { toast } from 'sonner';
 import PatientForm from '@/components/patient-form';
 import PatientList from '@/components/patient-list';
+import { usePatients, useCreatePatient } from '@/hooks/usePatients';
 
 export default function HomePage() {
-  const [patients, setPatients] = useState<Patient[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [showForm, setShowForm] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
+  const [showForm, setShowForm] = useState(false);
+  
+  const { data: patientsData, isLoading, error } = usePatients(currentPage);
+  const createMutation = useCreatePatient();
 
-  const loadPatients = async (page: number = 1) => {
-    try {
-      setLoading(true);
-      const patientsData = await patientApi.getPatients(page);
-      setPatients(patientsData.patients);
-      setCurrentPage(patientsData.page || 1);
-      setTotalPages(Math.ceil(patientsData.total / patientsData.per_page) || 1);
-      
-      if (patientsData.sources.third_party_error) {
-        toast.error('Some external patients may not be loaded due to connection issues');
-      }
-    } catch (error) {
-      toast.error('Failed to load patients');
-    } finally {
-      setLoading(false);
-    }
-  };
+  const patients = patientsData?.patients || [];
+  const totalPages = patientsData ? Math.ceil(patientsData.total / patientsData.per_page) : 1;
 
-  useEffect(() => {
-    loadPatients(currentPage);
-  }, [currentPage]);
-
+  // Calculate stats directly from patients data
   const stats = {
     total_patients: patients.length,
     local_count: patients.filter(p => p.source === 'local' || p.source === 'both').length,
@@ -47,22 +29,21 @@ export default function HomePage() {
     synced_count: patients.filter(p => p.source === 'both').length,
   };
 
-  const handlePatientCreated = (newPatient: Patient) => {
-    setPatients(prev => [newPatient, ...prev]);
-    setShowForm(false);
-    loadPatients(1);
-    toast.success('Patient created successfully');
+  const handlePatientCreated = async (patientData: PatientCreate) => {
+    try {
+      await createMutation.mutateAsync(patientData);
+      setShowForm(false);
+      toast.success('Patient created successfully');
+    } catch (error: any) {
+      toast.error(error.response?.data?.error || 'Failed to create patient');
+    }
   };
 
   const handlePatientDeleted = (patientId: string) => {
-    setPatients(prev => prev.filter(p => p.id !== patientId));
     toast.success('Patient deleted successfully');
   };
 
   const handlePatientCopied = (newPatient: Patient) => {
-    setPatients(prev => prev.map(p => 
-      p.id === newPatient.third_party_id ? newPatient : p
-    ));
     toast.success('Patient copied to local database');
   };
 
@@ -78,17 +59,21 @@ export default function HomePage() {
     }
   };
 
+  if (error) {
+    toast.error('Failed to load patients');
+  }
+
   return (
     <div className="container mx-auto p-6 space-y-6">
       {/* Header */}
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-3xl font-bold">Patient Management</h1>
+          <h1 className="text-3xl font-bold">Patient Management System</h1>
           <p className="text-muted-foreground">Manage your patients efficiently</p>
         </div>
-        <Button onClick={() => setShowForm(true)}>
+        <Button onClick={() => setShowForm(true)} disabled={createMutation.isPending}>
           <Plus className="mr-2 h-4 w-4" />
-          New Patient
+          {createMutation.isPending ? 'Creating...' : 'New Patient'}
         </Button>
       </div>
 
@@ -173,8 +158,7 @@ export default function HomePage() {
         <CardContent>
           <PatientList 
             patients={patients} 
-            loading={loading}
-            onPatientCreated={handlePatientCreated}
+            isLoading={isLoading}
             onPatientDeleted={handlePatientDeleted}
             onPatientCopied={handlePatientCopied}
           />

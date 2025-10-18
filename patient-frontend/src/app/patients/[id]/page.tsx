@@ -3,7 +3,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { Patient, ProcessPatientData } from '@/types/patient';
-import { patientApi } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -13,6 +12,8 @@ import { toast } from 'sonner';
 import { ArrowLeft, User, Calendar, Activity, ExternalLink, Database, Copy, BarChart3 } from 'lucide-react';
 import { formatDateTime } from '@/lib/utils';
 import ProcessResultChart from '@/components/process-result-chart';
+import { usePatient, useProcessPatient, useCopyPatient, useCachedProcessResult } from '@/hooks/usePatients';
+import { localCache } from '@/lib/cache';
 
 interface ProcessResult {
   success: boolean;
@@ -29,38 +30,67 @@ interface ProcessResult {
   results: [number, number][];
 }
 
+// Debounce hook for process inputs
+function useDebounce<T>(value: T, delay: number): T {
+  const [debouncedValue, setDebouncedValue] = useState<T>(value);
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedValue(value);
+    }, delay);
+
+    return () => {
+      clearTimeout(handler);
+    };
+  }, [value, delay]);
+
+  return debouncedValue;
+}
+
 export default function PatientDetailPage() {
   const params = useParams();
   const router = useRouter();
-  const [patient, setPatient] = useState<Patient | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [processing, setProcessing] = useState(false);
+  const patientId = params.id as string;
+  
+  const { data: patient, isLoading: patientLoading, error: patientError } = usePatient(patientId);
+  const processMutation = useProcessPatient();
+  const copyMutation = useCopyPatient();
+  
   const [processData, setProcessData] = useState<ProcessPatientData>({
     weight: { value: 70, unit: 'kg' },
     height: { value: 1.75, unit: 'm' }
   });
   const [processResult, setProcessResult] = useState<ProcessResult | null>(null);
   const [activeTab, setActiveTab] = useState<'form' | 'results'>('form');
-  const [copyingPatientId, setCopyingPatientId] = useState<string | null>(null);
+  
+  // Debounce process data to avoid too many cache checks
+  const debouncedProcessData = useDebounce(processData, 500);
+  
+  // Check for cached process result
+  const { data: cachedResult, refetch: checkCache } = useCachedProcessResult(
+    patientId, 
+    debouncedProcessData
+  );
 
-  const loadPatient = async () => {
-    try {
-      setLoading(true);
-      const patientData = await patientApi.getPatient(params.id as string);
-      setPatient(patientData);
-    } catch (error) {
-      toast.error('Failed to load patient');
-      router.push('/');
-    } finally {
-      setLoading(false);
-    }
-  };
-
+  // Load cached result when component mounts or process data changes
   useEffect(() => {
-    if (params.id) {
-      loadPatient();
+    if (cachedResult) {
+      setProcessResult(cachedResult);
+      setActiveTab('results');
     }
-  }, [params.id]);
+  }, [cachedResult]);
+
+  // Check localStorage cache on component mount
+  useEffect(() => {
+    if (patientId && processData) {
+      const cacheKey = `process-${patientId}-${JSON.stringify(processData)}`;
+      const cached = localCache.get<ProcessResult>(cacheKey);
+      if (cached) {
+        setProcessResult(cached);
+        setActiveTab('results');
+      }
+    }
+  }, [patientId, processData]);
 
   const handleProcess = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -72,32 +102,35 @@ export default function PatientDetailPage() {
       return;
     }
 
-    setProcessing(true);
     try {
-      const result = await patientApi.processPatient(patient.id, processData);
+      const result = await processMutation.mutateAsync({
+        id: patient.id,
+        data: processData
+      });
+      
       setProcessResult(result);
       setActiveTab('results');
+      
+      // Cache in localStorage as backup
+      const cacheKey = `process-${patient.id}-${JSON.stringify(processData)}`;
+      localCache.set(cacheKey, result, 30 * 60 * 1000); // 30 minutes
+      
       toast.success('Patient processed successfully');
     } catch (error: any) {
       toast.error(error.response?.data?.error || 'Failed to process patient');
-    } finally {
-      setProcessing(false);
     }
   };
 
   const handleCopyPatient = async (patient: Patient) => {
     if (patient.source !== 'third_party') return;
 
-    setCopyingPatientId(patient.id);
     try {
-      const newPatient = await patientApi.copyExternalPatient(patient.id);
+      const newPatient = await copyMutation.mutateAsync(patient);
       // Redirect to the new local patient detail page
       router.push(`/patients/${newPatient.id}`);
       toast.success('Patient copied to local database successfully');
     } catch (error: any) {
       toast.error(error.response?.data?.error || 'Failed to copy patient');
-    } finally {
-      setCopyingPatientId(null);
     }
   };
 
@@ -140,7 +173,7 @@ export default function PatientDetailPage() {
     }
   };
 
-  if (loading) {
+  if (patientLoading) {
     return (
       <div className="container mx-auto p-6 flex justify-center items-center min-h-64">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900"></div>
@@ -148,7 +181,9 @@ export default function PatientDetailPage() {
     );
   }
 
-  if (!patient) {
+  if (patientError || !patient) {
+    toast.error('Failed to load patient');
+    router.push('/');
     return null;
   }
 
@@ -248,6 +283,9 @@ export default function PatientDetailPage() {
                 ? 'Processing is available only for local patients'
                 : 'Calculate health metrics and generate analysis'
               }
+              {processResult && (
+                <span className="text-green-600 ml-2">✓ Results cached</span>
+              )}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -276,7 +314,7 @@ export default function PatientDetailPage() {
                     disabled={!processResult}
                   >
                     <BarChart3 className="h-4 w-4 inline mr-2" />
-                    Results
+                    Results {processResult && '✓'}
                   </button>
                 </div>
 
@@ -342,8 +380,13 @@ export default function PatientDetailPage() {
                       </div>
                     </div>
 
-                    <Button type="submit" disabled={processing} className="w-full">
-                      {processing ? 'Processing...' : 'Process Patient'}
+                    <Button 
+                      type="submit" 
+                      disabled={processMutation.isPending}
+                      className="w-full"
+                    >
+                      {processMutation.isPending ? 'Processing...' : 'Process Patient'}
+                      {processResult && ' (Cached)'}
                     </Button>
                   </form>
                 )}
@@ -371,11 +414,11 @@ export default function PatientDetailPage() {
                 </p>
                 <Button 
                   onClick={() => handleCopyPatient(patient)}
-                  disabled={copyingPatientId === patient.id}
+                  disabled={copyMutation.isPending}
                   className="mt-4"
                 >
                   <Copy className="h-4 w-4 mr-2" />
-                  {copyingPatientId === patient.id ? 'Copying...' : 'Copy to Local Database'}
+                  {copyMutation.isPending ? 'Copying...' : 'Copy to Local Database'}
                 </Button>
                 <p className="text-sm text-muted-foreground mt-2">
                   Copying will create a local version with full functionality
