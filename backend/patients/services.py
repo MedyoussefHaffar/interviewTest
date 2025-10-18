@@ -284,41 +284,54 @@ class PatientAPIClient:
         except Exception as e:
             return {"error": f"Failed to delete patient: {str(e)}"}, 500
     # Create a singleton instance
-    def copy_external_patient(self, external_patient_id):
+       
+    def create_local_patient_copy(self, patient_data):
         """
-        Create a local copy of an external patient
+        Create a local copy of a patient from provided data
         """
         try:
-            # Get the external patient data
-            external_patient_data, status_code = self._make_get_request(f"patients/{external_patient_id}")
+            # Check if this patient already exists locally by third_party_id
+            third_party_id = patient_data.get('third_party_id')
+            if third_party_id:
+                existing_patient = Patient.objects.filter(third_party_id=third_party_id).first()
+                if existing_patient:
+                    return {"error": "This patient already exists in local database"}, 400
             
-            if status_code != 200 or "error" in external_patient_data:
-                return {"error": "Failed to fetch external patient data"}, 400
-            
-            # Check if this external patient already exists locally
-            existing_patient = Patient.objects.filter(third_party_id=external_patient_id).first()
-            if existing_patient:
-                return {"error": "This external patient already exists in local database"}, 400
-            
-            # Create local patient with the external data
+            # Prepare data for local patient
             local_patient_data = {
-                'first_name': external_patient_data.get('first_name', ''),
-                'last_name': external_patient_data.get('last_name', ''),
-                'dob': external_patient_data.get('dob', ''),
-                'sex': external_patient_data.get('sex', ''),
-                'ethnic_background': external_patient_data.get('ethnic_background', ''),
-                'third_party_id': external_patient_id  # Link to the external patient
+                'first_name': patient_data.get('first_name', ''),
+                'last_name': patient_data.get('last_name', ''),
+                'dob': patient_data.get('dob', ''),
+                'sex': patient_data.get('sex', ''),
+                'ethnic_background': patient_data.get('ethnic_background', ''),
+                'third_party_id': third_party_id
             }
             
-            # Parse the date string to datetime for local storage
+            # Parse the date - handle multiple formats
             if local_patient_data['dob']:
                 try:
-                    if local_patient_data['dob'].endswith('Z'):
-                        local_patient_data['dob'] = datetime.fromisoformat(local_patient_data['dob'].replace('Z', '+00:00'))
+                    dob_str = local_patient_data['dob']
+                    
+                    # Handle different date formats
+                    if 'T' in dob_str:
+                        # ISO format with time
+                        if dob_str.endswith('Z'):
+                            local_patient_data['dob'] = datetime.fromisoformat(dob_str.replace('Z', '+00:00'))
+                        else:
+                            local_patient_data['dob'] = parser.parse(dob_str)
                     else:
-                        local_patient_data['dob'] = parser.parse(local_patient_data['dob'])
+                        # Date-only format: "1990-01-01"
+                        if len(dob_str) == 10:  # YYYY-MM-DD
+                            dob_str = dob_str + 'T00:00:00Z'
+                            local_patient_data['dob'] = datetime.fromisoformat(dob_str.replace('Z', '+00:00'))
+                        else:
+                            local_patient_data['dob'] = parser.parse(dob_str)
+                            
                 except (ValueError, TypeError, parser.ParserError) as e:
-                    return {"error": f"Invalid date format in external patient data: {str(e)}"}, 400
+                    print(f"Warning: Could not parse date '{local_patient_data['dob']}'. Setting to None. Error: {e}")
+                    local_patient_data['dob'] = None
+            else:
+                local_patient_data['dob'] = None
             
             # Create the local patient
             local_patient = Patient.objects.create(**local_patient_data)
@@ -327,5 +340,4 @@ class PatientAPIClient:
             
         except Exception as e:
             return {"error": f"Failed to create local copy: {str(e)}"}, 500
-
 api_client = PatientAPIClient()

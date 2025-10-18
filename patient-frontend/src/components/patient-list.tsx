@@ -1,6 +1,5 @@
 'use client';
 
-import { useState } from 'react';
 import { Patient } from '@/types/patient';
 import {
   Table,
@@ -26,21 +25,22 @@ import { toast } from 'sonner';
 import { formatDate } from '@/lib/utils';
 import { Eye, Trash2, Copy, User, Database, ExternalLink } from 'lucide-react';
 import Link from 'next/link';
-import { patientApi } from '@/lib/api';
+import { useDeletePatient, useCopyPatient } from '@/hooks/usePatients';
+import { useState } from 'react';
 
 interface PatientListProps {
   patients: Patient[];
-  loading: boolean;
-  onPatientCreated: (patient: Patient) => void;
+  isLoading: boolean;
   onPatientDeleted: (patientId: string) => void;
   onPatientCopied: (newPatient: Patient) => void;
 }
 
-export default function PatientList({ patients, loading, onPatientCreated, onPatientDeleted, onPatientCopied }: PatientListProps) {
+export default function PatientList({ patients, isLoading, onPatientDeleted, onPatientCopied }: PatientListProps) {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [patientToDelete, setPatientToDelete] = useState<Patient | null>(null);
-  const [copyingPatientId, setCopyingPatientId] = useState<string | null>(null);
-  const [deleting, setDeleting] = useState(false);
+  
+  const deleteMutation = useDeletePatient();
+  const copyMutation = useCopyPatient();
 
   const getSourceIcon = (source: string) => {
     switch (source) {
@@ -89,15 +89,13 @@ export default function PatientList({ patients, loading, onPatientCreated, onPat
   const handleDeleteConfirm = async () => {
     if (!patientToDelete) return;
 
-    setDeleting(true);
     try {
-      await patientApi.deletePatient(patientToDelete.id);
+      await deleteMutation.mutateAsync(patientToDelete.id);
       onPatientDeleted(patientToDelete.id);
       toast.success('Patient deleted successfully');
     } catch (error: any) {
       toast.error(error.response?.data?.error || 'Failed to delete patient');
     } finally {
-      setDeleting(false);
       setDeleteDialogOpen(false);
       setPatientToDelete(null);
     }
@@ -106,19 +104,16 @@ export default function PatientList({ patients, loading, onPatientCreated, onPat
   const handleCopyPatient = async (patient: Patient) => {
     if (patient.source !== 'third_party') return;
 
-    setCopyingPatientId(patient.id);
     try {
-      const newPatient = await patientApi.copyExternalPatient(patient.id);
+      const newPatient = await copyMutation.mutateAsync(patient);
       onPatientCopied(newPatient);
       toast.success('Patient copied to local database successfully');
     } catch (error: any) {
       toast.error(error.response?.data?.error || 'Failed to copy patient');
-    } finally {
-      setCopyingPatientId(null);
     }
   };
 
-  if (loading) {
+  if (isLoading) {
     return (
       <div className="flex justify-center items-center py-8">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900"></div>
@@ -189,10 +184,10 @@ export default function PatientList({ patients, loading, onPatientCreated, onPat
                         variant="outline" 
                         size="sm"
                         onClick={() => handleCopyPatient(patient)}
-                        disabled={copyingPatientId === patient.id}
+                        disabled={copyMutation.isPending}
                       >
                         <Copy className="h-4 w-4 mr-1" />
-                        {copyingPatientId === patient.id ? 'Copying...' : 'Copy to Local'}
+                        {copyMutation.isPending ? 'Copying...' : 'Copy to Local'}
                       </Button>
                     )}
                     
@@ -227,13 +222,13 @@ export default function PatientList({ patients, loading, onPatientCreated, onPat
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={deleteMutation.isPending}>Cancel</AlertDialogCancel>
             <AlertDialogAction 
               onClick={handleDeleteConfirm}
-              disabled={deleting}
+              disabled={deleteMutation.isPending}
               className="bg-red-600 hover:bg-red-700"
             >
-              {deleting ? 'Deleting...' : 'Delete'}
+              {deleteMutation.isPending ? 'Deleting...' : 'Delete'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -45,8 +45,8 @@ export const patientApi = {
     },
 
     // Copy external patient to local
-    copyExternalPatient: async (id: string): Promise<Patient> => {
-        const response = await api.post(`/patients/${id}/copy`);
+    copyExternalPatient: async (patient: Patient): Promise<Patient> => {
+        const response = await api.post('/patients/copy', patient);
         return response.data;
     },
 
